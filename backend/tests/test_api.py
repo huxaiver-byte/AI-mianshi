@@ -86,10 +86,31 @@ def test_batch_item_import_is_atomic_and_separate(client):
     assert first.json()['candidate']['id']!=second.json()['candidate']['id']
     for name,data,status in [('broken.pdf',b'bad-pdf',422),('bad.exe',b'x',400),('empty.txt',b'',400)]:
         assert client.post(route,data={'name':'失败项','role':'后端'},files={'file':(name,data)}).status_code==status
-    assert client.post(route,data={'name':'  ','role':'后端'},files={'file':('a.txt',b'abc')}).status_code==422
+    assert client.post(route,data={'name':'  ','role':'后端'},files={'file':('a.txt',b'abc')}).status_code==201
     people=client.get(f"/api/projects/{project['id']}/candidates").json()
-    assert len(people)==2 and all(p['resume_count']==1 and p['session_count']==0 for p in people)
-    assert len(list((database.DATA_DIR/'resumes').iterdir()))==2
+    assert len(people)==3 and all(p['resume_count']==1 and p['session_count']==0 for p in people)
+    assert len(list((database.DATA_DIR/'resumes').iterdir()))==3
     for person in (first.json(),second.json()):
         resumes=client.get(f"/api/candidates/{person['candidate']['id']}/resumes").json()
         assert len(resumes)==1 and resumes[0]['id']==person['resume']['id']
+
+
+def test_auto_identity_import_without_name_or_role(client):
+    p=client.post('/api/projects',json={'kind':'jd','title':'简历导入','description':'测试'}).json()
+    route=f"/api/projects/{p['id']}/import-candidate"
+    r=client.post(route,files={'file':('【AI全栈工程师实习生_杭州 100-200元_天】刘肖 27年应届生 (1).txt','项目经历\nPython 开发'.encode())})
+    assert r.status_code==201, r.text
+    assert r.json()['candidate']['name']=='刘肖'
+    assert r.json()['candidate']['role']=='AI全栈工程师实习生'
+    r=client.post(route,files={'file':('resume.txt','姓名：张三\n工作经历：开发接口'.encode())})
+    assert r.json()['candidate']['name']=='张三'
+    r=client.post(route,files={'file':('resume.txt','个人简历\n教育经历\n专业技能'.encode())})
+    assert r.json()['candidate']['name'].startswith('待识别-')
+    assert r.json()['candidate']['role']=='未指定岗位'
+
+
+def test_recruitment_filename_names():
+    from backend.resume_identity import identify
+    for name in ['任先生','曹程洋','曾亮亮','陈毅','洪杨凯','刘肖']:
+        assert identify('个人简历',f'【AI全栈工程师实习生_杭州 100-200元_天】{name} 27年应届生 (1).pdf')[0]==name
+    assert identify('姓名：李明\nPython 开发','陈毅 28年应届生.pdf')[0]=='李明'

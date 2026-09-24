@@ -5,6 +5,7 @@ import './style.css';
 import './theme.css';
 import { CandidateWorkflow, InterviewPage, SkillsPage } from './workflow';
 import { BatchImport } from './BatchImport';
+import { GuidePage } from './Guide';
 
 function useAction() {
   const [busy, setBusy] = useState(false);
@@ -104,7 +105,7 @@ function LandingPage({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: ()
       </p>
       <div className="cta-row">
         <a className="cta" href="#/app">进入工作台</a>
-        <a className="cta alt" href="#how">了解功能</a>
+        <a className="cta alt" href="#/guide">了解功能</a>
       </div>
       <a className="hero-shot reveal" href="#/app" aria-label="进入工作台查看完整界面">
         <img src="/shots/dashboard.png" alt="AI 面试工作台界面：简历上传、候选人与岗位管理一览" loading="eager" />
@@ -122,7 +123,7 @@ function LandingPage({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: ()
           <div className="step reveal" style={{ ['--i' as any]: 1 }}><span className="num">02</span><h4>导入简历</h4><p>批量上传 PDF/DOCX/TXT，一份文件对应一位候选人。</p></div>
           <div className="step reveal" style={{ ['--i' as any]: 2 }}><span className="num">03</span><h4>生成提纲</h4><p>基于简历与岗位知识，AI 输出问题、声明与待确认点。</p></div>
           <div className="step reveal" style={{ ['--i' as any]: 3 }}><span className="num">04</span><h4>进行面试</h4><p>逐题记录回答，模型给出引用与追问建议，面试官拍板。</p></div>
-          <div className="step reveal" style={{ ['--i' as any]: 4 }}><span className="num">05</span><h4>证据报告</h4><p>汇总回答、人工复核与原文引用，导出 Markdown。</p></div>
+          <div className="step reveal" style={{ ['--i' as any]: 4 }}><span className="num">05</span><h4>证据报告</h4><p>汇总回答、人工复核与原文引用，在线阅读，归档并导出 PDF / Markdown。</p></div>
         </div>
       </div>
     </section>
@@ -319,7 +320,8 @@ function AppleSelect<T extends string | number>({ value, options, onChange, plac
 /* ============================================================
    工作台首页的智能上传入口（自动选项目，没项目自动建）
    ============================================================ */
-function DashboardUpload({ onDone }: { onDone: () => void }) {
+function DashboardUpload({ onDone }: { onDone: () => Promise<void> }) {
+  const [mode,setMode]=useState<'single'|'batch'>('single');
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<number>(0);
   const [file, setFile] = useState<File | null>(null);
@@ -348,10 +350,10 @@ function DashboardUpload({ onDone }: { onDone: () => void }) {
     setBusy(true); setError(''); setResult(null);
     try {
       const pid = await ensureProject();
-      const tmpName = file.name.replace(/\.[^.]+$/, '').slice(0, 100) || '未命名';
+
       const data = new FormData();
-      data.set('name', tmpName);
-      data.set('role', role.trim() || '未指定岗位');
+
+      data.set('role', role.trim());
       data.set('file', file);
       const res = await api<{ candidate: Candidate; resume: Resume }>(`/projects/${pid}/import-candidate`, { method: 'POST', body: data });
       const text = res.resume.text || '';
@@ -359,39 +361,41 @@ function DashboardUpload({ onDone }: { onDone: () => void }) {
       if (guessed.name || guessed.years) {
         await api(`/candidates/${res.candidate.id}`, json('PUT', {
           project_id: pid,
-          name: guessed.name || tmpName,
+          name: res.candidate.name,
           role: role.trim() || res.candidate.role,
           notes: guessed.years ? `自动识别工作年限：${guessed.years}` : '',
         }));
       }
       setResult({
-        name: guessed.name || tmpName,
+        name: res.candidate.name,
         years: guessed.years || '未识别到',
         fileName: file.name,
       });
       setFile(null);
-      onDone();
+      await onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : '上传失败');
     } finally { setBusy(false); }
   }
 
   return <div className="card upload-hero">
-    <h3>⚡ 上传简历，自动识别姓名与工作年限</h3>
-    <p className="muted">支持 PDF / DOCX / TXT，单文件最大 20 MB。系统本地解析后自动从简历文本里提取姓名和工作年限，预填到候选人档案。</p>
+    <div className="report-toolbar"><h3>上传简历，建立候选人档案</h3><div className="import-modes"><button className={mode==='single'?'':'secondary'} disabled={busy} aria-pressed={mode==='single'} onClick={()=>setMode('single')}>单份识别</button><button className={mode==='batch'?'':'secondary'} disabled={busy} aria-pressed={mode==='batch'} onClick={()=>setMode('batch')}>批量导入</button></div></div>
+    <p className="muted">支持 PDF / DOCX / TXT，单文件最大 20 MB。{mode==='single'?'系统本地解析后尝试提取姓名和工作年限，预填到候选人档案。':'一次选择多份文件，自动识别姓名，一批完成导入。'}</p>
     <div className="grid">
       <label>目标项目
         <AppleSelect<number>
           value={projectId}
+          disabled={busy}
           placeholder="自动创建“简历导入”项目"
           options={projects.map(p => ({ value: p.id, label: p.title }))}
           onChange={setProjectId}
         />
       </label>
-      <label>应聘岗位（可选）
+      {mode==='single' && <label>应聘岗位（可选）
         <input value={role} maxLength={200} placeholder="例如：后端工程师" onChange={e => setRole(e.target.value)} />
-      </label>
+      </label>}
     </div>
+    {mode==='single' ? <>
     <label>选择简历文件
       <input type="file" accept=".pdf,.docx,.txt" disabled={busy} onChange={e => setFile(e.target.files?.[0] || null)} />
     </label>
@@ -404,6 +408,7 @@ function DashboardUpload({ onDone }: { onDone: () => void }) {
       <p className="muted">文件：{result.fileName}</p>
     </div>}
     <button disabled={busy || !file} onClick={() => void start()}>{busy ? '解析中…' : '上传并识别'}</button>
+    </> : <BatchImport projectId={projectId} ensureProject={ensureProject} onBusy={setBusy} onImported={onDone}/>}
   </div>;
 }
 
@@ -614,11 +619,11 @@ function SmartUpload({ projectId, onImported }: { projectId: number; onImported:
     if (!file) return;
     setBusy(true); setError(''); setResult(null);
     try {
-      // 先用文件名做临时姓名上传
-      const tmpName = file.name.replace(/\.[^.]+$/, '').slice(0, 100) || '未命名';
+      // 由后端统一从正文及文件名识别姓名
+
       const data = new FormData();
-      data.set('name', tmpName);
-      data.set('role', role.trim() || '未指定岗位');
+
+      data.set('role', role.trim());
       data.set('file', file);
       const res = await api<{ candidate: Candidate; resume: Resume }>(`/projects/${projectId}/import-candidate`, { method: 'POST', body: data });
       const text = res.resume.text || '';
@@ -627,20 +632,20 @@ function SmartUpload({ projectId, onImported }: { projectId: number; onImported:
       if (guessed.name) {
         await api(`/candidates/${res.candidate.id}`, json('PUT', {
           project_id: projectId,
-          name: guessed.name,
+          name: res.candidate.name,
           role: role.trim() || res.candidate.role,
           notes: guessed.years ? `自动识别工作年限：${guessed.years}` : '',
         }));
       } else if (guessed.years) {
         await api(`/candidates/${res.candidate.id}`, json('PUT', {
           project_id: projectId,
-          name: tmpName,
+          name: res.candidate.name,
           role: role.trim() || res.candidate.role,
           notes: `自动识别工作年限：${guessed.years}`,
         }));
       }
       setResult({
-        name: guessed.name || tmpName,
+        name: res.candidate.name,
         years: guessed.years || '未识别到',
         fileName: file.name,
       });
@@ -1119,13 +1124,15 @@ function App() {
     try { localStorage.setItem('ai-interview-accent', accent); } catch { /* ignore */ }
   }, [accent]);
 
-  const currentPath = () => (location.hash.slice(1) || '/').split('?')[0];
+  const currentPath = () => {const path=(location.hash.slice(1)||'/').split('?')[0];return path.startsWith('/')?path:'/';};
   const [route, setRoute] = useState(currentPath());
   useEffect(() => {
     const change = () => setRoute(currentPath());
     window.addEventListener('hashchange', change);
     return () => window.removeEventListener('hashchange', change);
   }, []);
+
+  useEffect(()=>{if(location.hash.startsWith('#/'))window.scrollTo(0,0);},[route]);
 
   const sessionMatch = route.match(/^\/sessions\/(\d+)$/);
   const match = route.match(/^\/projects\/(\d+)$/);
@@ -1142,6 +1149,7 @@ function App() {
     if (route.startsWith('/new/project')) return ['新建项目', '定义项目需求'];
     if (route.startsWith('/new/jd')) return ['新建岗位', '撰写岗位 JD'];
     if (route === '/settings') return ['设置', '个性化 · 模型 · 备份'];
+    if (route === '/guide') return ['使用指南', '从第一次导入到报告归档'];
     if (route === '/skills') return ['出题规则', 'AI 出题时参考的规则模板'];
     if (sessionMatch) return ['面试', `第 ${sessionMatch[1]} 场`];
     if (candidateMatch) return ['候选人档案', `#${candidateMatch[2]}`];
@@ -1152,6 +1160,7 @@ function App() {
   const activeItem = route === '/app' || route.startsWith('/new/') ? 'home'
     : route === '/calendar' ? 'calendar'
     : route === '/skills' ? 'skills'
+    : route === '/guide' ? 'guide'
     : route === '/settings' ? 'settings'
     : 'home';
 
@@ -1159,11 +1168,13 @@ function App() {
     <PixelField />
     <aside className={'sidebar' + (collapsed?' collapsed':'')}>
       <div className="logo">
+        <a className="logo-home" href="#/" aria-label="返回首页" title="返回首页">
         <div className="logo-mark" aria-hidden="true">面</div>
         <div className="logo-text">
           <span className="name">AI 面试工作台</span>
           <span className="sub">INTERVIEW OS</span>
         </div>
+        </a>
         <button className="collapse-btn" onClick={()=>{const v=!collapsed;setCollapsed(v);localStorage.setItem('sidebar-collapsed',v?'1':'0');}} aria-label="收起/展开">
           {collapsed ? '▶' : '◀'}
         </button>
@@ -1187,6 +1198,7 @@ function App() {
         </div>
         <div className="nav-group">
           <div className="nav-group-title">系统</div>
+          <a className={`nav-item ${activeItem === 'guide' ? 'active' : ''}`} href="#/guide"><span className="ico" aria-hidden="true">?</span> 使用指南</a>
           <a className={`nav-item ${activeItem === 'settings' ? 'active' : ''}`} href="#/settings">
             <span className="ico" aria-hidden="true">⚙</span> 设置
           </a>
@@ -1211,6 +1223,7 @@ function App() {
           : route === '/new/project' ? <NewProject kind="project" />
           : route === '/new/jd' ? <NewProject kind="jd" />
           : route === '/settings' ? <SettingsPage dark={dark} onDark={setDark} accent={accent} onAccent={setAccent} />
+          : route === '/guide' ? <GuidePage />
           : route === '/skills' ? <SkillsPage />
           : sessionMatch ? <InterviewPage id={Number(sessionMatch[1])} />
           : candidateMatch ? <CandidatePage projectId={Number(candidateMatch[1])} candidateId={Number(candidateMatch[2])} />

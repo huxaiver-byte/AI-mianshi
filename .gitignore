@@ -33,3 +33,6 @@ Thumbs.db
 .playwright-cli/
 _*.py
 _*.ps1
+
+# Local verification artifacts
+/work/

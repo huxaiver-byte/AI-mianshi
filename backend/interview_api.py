@@ -232,7 +232,13 @@ def review(identifier: int, index: int, body: ReviewRequest):
 
 @router.get("/sessions/{identifier}/report")
 def report(identifier: int):
+    from .report_summary import build_report
     session = get_session(identifier)
+    return {"markdown": build_report(session, evidence_report), "status": session["status"]}
+
+
+def evidence_report(session):
+    identifier = session["id"]
     gen = session["generation"]
     lines = ["# 面试证据报告", f"会话：{identifier} | 状态：{session['status']} | 已回答：{len(session['turns'])}/{session['budget']}", f"模型：{gen['input']['provider']} / {gen['input']['model']} | 提示词：{gen['input']['prompt_version']} | 提纲 #{gen['id']} | 简历 #{gen['resume_id']}", "模型分析仅为待复核线索；SUPPORTED 不代表经历已被外部证实。本报告不作录用决定。", "## 能力覆盖"]
     lines += [f"- {name}：{count} 轮" for name, count in session["coverage"].items()]
@@ -258,8 +264,78 @@ def report(identifier: int):
     lines += ["## 面试记录"]
     for i, t in enumerate(session["turns"]):
         lines += [f"### 第 {i+1} 题（记录 #{t['id']}）", t["question"]["question"], "回答：", t["answer"], "模型观察：", t["analysis"]["observation"], "本轮引用：", t["analysis"]["answer_quote"]]
-    return {"markdown": "\n\n".join(lines), "status": session["status"]}
+    return "\n\n".join(lines)
 
 @router.get("/sessions/{identifier}/report.md")
 def download_report(identifier: int):
     return Response(report(identifier)["markdown"], media_type="text/markdown; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="interview-{identifier}.md"'})
+
+
+class ReportExtras(BaseModel):
+    note: str = ""
+    manual: list[dict[str, str]] = []
+
+
+@router.post("/sessions/{identifier}/reports", status_code=201)
+def archive_report(identifier: int, body: ReportExtras):
+    from .report_export import render_pdf
+    import hashlib
+    session = get_session(identifier)
+    if session["status"] != "completed":
+        raise HTTPException(409, "请先结束面试再归档报告。")
+    if len(body.note) > 10000 or len(body.manual) > 200 or any(len(v) > 15000 for item in body.manual for v in item.values()):
+        raise HTTPException(422, "备注或手动问答过长，请精简后重试。")
+    from .report_summary import build_report
+    candidate = session["candidate"]
+    markdown = build_report(session, evidence_report, body.note, body.manual)
+    digest = hashlib.sha256(markdown.encode()).hexdigest()
+    with connect() as db:
+        existing = db.execute("SELECT id FROM reports WHERE session_id=? AND digest=?", (identifier, digest)).fetchone()
+    if existing:
+        return get_archived_report(existing["id"])
+    pdf = render_pdf(markdown)
+    with connect() as db:
+        db.execute("INSERT OR IGNORE INTO reports(session_id,candidate_id,digest,markdown,pdf) VALUES(?,?,?,?,?)",
+                   (identifier, candidate['id'], digest, markdown, pdf))
+        rid = db.execute("SELECT id FROM reports WHERE session_id=? AND digest=?", (identifier, digest)).fetchone()["id"]
+    return get_archived_report(rid)
+
+
+@router.get("/candidates/{candidate_id}/reports")
+def candidate_reports(candidate_id: int):
+    with connect() as db:
+        service.require(db, "candidates", candidate_id)
+        return [dict(r) for r in db.execute("SELECT id,session_id,created_at FROM reports WHERE candidate_id=? ORDER BY id DESC", (candidate_id,))]
+
+
+@router.get("/reports/{identifier}")
+def get_archived_report(identifier: int):
+    with connect() as db:
+        row = db.execute("SELECT id,session_id,candidate_id,markdown,created_at FROM reports WHERE id=?", (identifier,)).fetchone()
+        if not row:
+            raise HTTPException(404, "报告不存在。")
+        return dict(row)
+
+
+@router.get("/reports/{identifier}/download/{format}")
+def download_archived_report(identifier: int, format: str):
+    import io
+    import zipfile
+    if format not in {"pdf", "md", "zip"}:
+        raise HTTPException(400, "不支持的报告格式。")
+    with connect() as db:
+        row = db.execute("SELECT * FROM reports WHERE id=?", (identifier,)).fetchone()
+        if not row:
+            raise HTTPException(404, "报告不存在。")
+    stem = f"interview-{row['session_id']}-report-{identifier}"
+    if format == "zip":
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
+            bundle.writestr(stem + ".pdf", row['pdf'])
+            bundle.writestr(stem + ".md", row['markdown'].encode('utf-8'))
+        data, media = output.getvalue(), "application/zip"
+    elif format == "pdf":
+        data, media = row['pdf'], "application/pdf"
+    else:
+        data, media = row['markdown'], "text/markdown; charset=utf-8"
+    return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{stem}.{format}"'})

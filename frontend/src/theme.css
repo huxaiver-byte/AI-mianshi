@@ -161,3 +161,27 @@
   --brand-ring: rgba(236,194,75,.28); --brand-glow: rgba(236,194,75,.50);
   --shadow-brand: 0 6px 18px rgba(236,194,75,.28);
 }
+
+/* Guide, report archive and import entry share the existing surface tokens. */
+.logo-home {display:flex;align-items:center;gap:10px;min-width:0;color:var(--ink);text-decoration:none;flex:1;}
+.logo-home:focus-visible {outline:2px solid var(--brand);outline-offset:5px;border-radius:10px;}
+.report-toolbar {display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:12px 0 20px;}
+.report-actions,.import-modes {display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.guide-page {max-width:1000px;margin:auto;}
+.guide-page .hero h1 {font-size:clamp(32px,4vw,52px);line-height:1.2;letter-spacing:-1.5px;}
+.guide-steps {display:grid;gap:18px;margin:32px 0;}
+.guide-step {display:grid;grid-template-columns:80px 1fr;gap:24px;padding:32px;}
+.guide-number {font-size:48px;line-height:1.2;font-weight:700;color:var(--brand);opacity:.6;}
+.guide-step h2 {margin:8px 0 14px;}.guide-step p {line-height:1.85;}
+.guide-tip {padding:16px 20px;background:var(--surface-2);border-radius:14px;color:var(--muted);}
+.guide-faq details {padding:16px 0;border-bottom:1px solid var(--hairline);}
+.report-archive {margin-bottom:28px;}.report-reader {margin-top:24px;}
+.report-paper {padding:clamp(20px,4vw,48px);background:var(--surface);border:1px solid var(--hairline);border-radius:20px;overflow-wrap:anywhere;}
+.report-paper h1 {font-size:30px;margin:0 0 26px;}.report-paper h2 {font-size:22px;margin:30px 0 16px;padding-bottom:12px;border-bottom:1px solid var(--hairline);color:var(--brand);}
+.report-paper h3 {margin:22px 0 12px;}.report-paper p {white-space:pre-wrap;line-height:1.85;margin:12px 0;}
+@media(max-width:650px){.guide-step{grid-template-columns:1fr;padding:24px;gap:12px;}.guide-number{font-size:32px;}.report-actions button{flex:1;}.report-paper h1{font-size:25px;}}
+
+.report-appendices {margin-top:32px;border-top:1px solid var(--hairline);padding-top:16px;}
+.report-appendices details {padding:16px 0;border-bottom:1px solid var(--hairline);}
+.report-appendices summary {font-size:14px;color:var(--muted);cursor:pointer;}
+.report-paper p {font-weight:400;}.report-paper h3 {font-size:17px;}

@@ -159,18 +159,22 @@ async def upload_resume(candidate_id: int, file: UploadFile):
 
 @app.post("/api/projects/{project_id}/import-candidate", status_code=201)
 async def import_candidate(project_id: int, file: UploadFile,
-                           name: str = Form(min_length=1, max_length=100),
-                           role: str = Form(min_length=1, max_length=200)):
+                           name: str = Form(default="", max_length=100),
+                           role: str = Form(default="", max_length=200)):
     name, role = name.strip(), role.strip()
-    if not name or not role:
-        raise HTTPException(422, "请填写候选人姓名和岗位。")
     with connect() as db:
-        require(db, "projects", project_id)
+        project = require(db, "projects", project_id)
     prepared = await prepare_resume(file)
+    from .resume_identity import identify
+    detected_name, detected_role, source = identify(prepared[2], prepared[1])
+    name = name or detected_name
+    role = role or detected_role or (project["title"] if project["title"] != "简历导入" else "未指定岗位")
+    identity_note = "姓名由" + source + "自动识别。" if detected_name else "未识别到姓名，已使用临时标识，可稍后在档案中修改。"
+    name = name or ("待识别-" + prepared[0].stem[:8])
     try:
         with connect() as db:
             # One file is one atomic candidate+resume import. Failed files leave no empty candidates.
-            candidate_id = db.execute("INSERT INTO candidates(project_id,name,role,notes) VALUES(?,?,?,?)", (project_id, name, role, "批量简历导入；姓名与岗位由导入时确认。")).lastrowid
+            candidate_id = db.execute("INSERT INTO candidates(project_id,name,role,notes) VALUES(?,?,?,?)", (project_id, name, role, identity_note)).lastrowid
             resume = insert_resume(db, candidate_id, prepared)
             candidate = require(db, "candidates", candidate_id)
         return {"candidate": candidate, "resume": resume}

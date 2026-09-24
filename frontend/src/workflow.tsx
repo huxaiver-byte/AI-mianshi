@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, json, type Resume } from './api';
+import { archiveReport, downloadReport, ReportReader, CandidateReports } from './Reports';
 
 type Skill = { id: string; content: string; version: string };
 type Question = { question: string; capability: string; resume_quote: string; reason: string; difficulty: string; kind?:'opening' };
@@ -26,20 +27,6 @@ export function useTask() {
 }
 export function Notice({error}: {error:string}) { return error ? <p role="alert" className="error">{error}</p> : null; }
 
-async function downloadReport(sid: number, name?: string) {
-  const resp = await fetch(`/api/sessions/${sid}/report.md`);
-  if (!resp.ok) throw new Error('报告下载失败');
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `面试报告-${name||sid}.md`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 const skillNames: Record<string,string> = {'project-requirement':'从岗位描述提取重点','question-design':'怎么提问','roles-backend':'后端技术考点','competition-analysis':'竞赛经历怎么问'};
 
 export function CandidateWorkflow({candidateId,resumes}: {candidateId:number;resumes:Resume[]}) {
@@ -64,7 +51,7 @@ export function CandidateWorkflow({candidateId,resumes}: {candidateId:number;res
   const chosen = resumeId || String(resumes[0]?.id || '');
   const body = {resume_id:Number(chosen),privacy,question_count:5,skill_ids:skillIds,interview_style:'focused'};
   function invalidate() {setPreview(null);}
-  return <section className="workflow"><h3>开始面试</h3>
+  return <section className="workflow"><CandidateReports candidateId={candidateId}/><h3>开始面试</h3>
     {!resumes.length ? <p className="muted">上传并解析简历后可开始。</p> : <>
     <label>选择简历<select value={chosen} onChange={e=>{setResumeId(e.target.value);invalidate();}}>{resumes.map(r=><option key={r.id} value={r.id}>{r.original_name}</option>)}</select></label>
     <label className="check"><input type="checkbox" checked={privacy} onChange={e=>{setPrivacy(e.target.checked);invalidate();}}/>自动脱敏</label>
@@ -98,11 +85,20 @@ export function InterviewPage({id}: {id:number}) {
   const [showManual,setShowManual]=useState(false);
   const [mq,setMq]=useState('');
   const [ma,setMa]=useState('');
-  const [manualNotes,setManualNotes]=useState<{q:string;a:string}[]>([]);
+  const [manualNotes,setManualNotes]=useState<{q:string;a:string}[]>(()=>{try{return JSON.parse(localStorage.getItem('manual-notes-'+id)||'[]');}catch{return [];}});
+  useEffect(()=>{localStorage.setItem('manual-notes-'+id,JSON.stringify(manualNotes));},[manualNotes,id]);
   const [showFollowUp,setShowFollowUp]=useState(false);
   const [customFq,setCustomFq]=useState('');
   const [hrNote,setHrNote]=useState(()=>localStorage.getItem('hr-note-'+id)||'');
   const [dlMsg,setDlMsg]=useState('');
+  const [report,setReport]=useState<Awaited<ReturnType<typeof archiveReport>>|null>(null);
+  const [reportBusy,setReportBusy]=useState(false);
+  async function prepareReport(download=false) {
+    setReportBusy(true);setDlMsg('');
+    try {const saved=await archiveReport(id,hrNote,manualNotes);setReport(saved);if(download)await downloadReport(saved.id);setDlMsg(download?'已归档，已发起 PDF + Markdown 压缩包下载。':'报告已保存到候选人档案。');}
+    catch(e){setDlMsg(e instanceof Error?e.message:'报告生成失败，请重试。');}
+    finally{setReportBusy(false);}
+  }
 
   useEffect(()=>{void task.run(async()=>setSession(await api(`/sessions/${id}`)));},[id]);
   if(!session) return <><Notice error={task.error}/><p>加载面试…</p></>;
@@ -152,22 +148,14 @@ export function InterviewPage({id}: {id:number}) {
       {session.status==='active'
         ? <button className="secondary" disabled={busy}
             onClick={()=>{if(window.confirm('结束本次面试？'))void task.run(async()=>setSession(await api(`/sessions/${sid}/finish`,json('POST',{revision:session.revision}))));}}>结束面试</button>
-        : <button className="secondary" disabled={!!dlMsg}
-            onClick={async()=>{
-              setDlMsg('正在下载…');
-              try {
-                await downloadReport(sid, session.candidate?.name);
-                setDlMsg('✓ 已保存到系统「下载」文件夹');
-                setTimeout(()=>setDlMsg(''), 4000);
-              } catch { setDlMsg('下载失败，请重试'); setTimeout(()=>setDlMsg(''), 3000); }
-            }}>{dlMsg||'下载报告'}</button>}
+        : <button className="secondary" disabled={reportBusy} onClick={()=>void prepareReport(true)}>{reportBusy?'正在生成…':'下载报告'}</button>}
     </div>
-    {dlMsg && dlMsg.includes('✓') && <p className="ok-msg">{dlMsg}</p>}
-
+    {dlMsg && <p role="status">{dlMsg}</p>}
     <Notice error={task.error}/>
+    {session.status==='completed' && <section className="card"><div className="report-toolbar"><div><h3>候选人面试简报</h3><p className="muted">先看岗位匹配与关键能力，原文证据和生成信息在文末按需展开。</p></div><button disabled={reportBusy} onClick={()=>void prepareReport()}>{reportBusy?'生成中…':'生成报告并归档'}</button></div>{report && <ReportReader report={report}/>}</section>}
 
     {/* 面试分析板块 */}
-    <section className="analysis-card">
+    <details className="analysis-card" open={session.status==='active'}><summary>面试过程与能力覆盖</summary>
       <div className="analysis-head">
         <span className="analysis-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -196,7 +184,7 @@ export function InterviewPage({id}: {id:number}) {
         <textarea value={hrNote} onChange={e=>saveNote(e.target.value)} rows={2}
           placeholder="随时记录你的判断、印象、顾虑…自动保存在本机。"/>
       </label>
-    </section>
+    </details>
 
     {/* 当前问题 */}
     {session.status==='active' && session.current ? (

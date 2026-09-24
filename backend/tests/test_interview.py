@@ -390,3 +390,86 @@ def test_legacy_database_migration_keeps_rows(tmp_path,monkeypatch):
         assert db.execute('SELECT count(*) FROM schema_migrations').fetchone()[0]==1
         from backend.secrets import reveal
         assert reveal(db.execute('SELECT api_key FROM settings').fetchone()[0])=='legacy-fake-key'
+
+
+def test_report_archive_download_and_cascade(prepared):
+    import io
+    import zipfile
+    import fitz
+    c, cid, _ = prepared
+    gen = make_plan(prepared)
+    session = c.post('/api/sessions', json={'generation_id':gen['id'],'budget':2}).json()
+    sid = session['id']
+    extras = {'note':'需要进一步核对项目职责。<script>alert(1)</script>', 'manual':[{'q':'个人贡献？','a':'负责接口实现。'}]}
+    assert c.post(f'/api/sessions/{sid}/reports',json=extras).status_code == 409
+    c.post(f'/api/sessions/{sid}/finish',json={'revision':session['revision']})
+    response = c.post(f'/api/sessions/{sid}/reports',json=extras)
+    assert response.status_code == 201, response.text
+    saved = response.json()
+    rid = saved['id']
+    assert '个人贡献？' in saved['markdown'] and extras['note'] in saved['markdown']
+    assert c.post(f'/api/sessions/{sid}/reports',json=extras).json()['id'] == rid
+    archive = c.get(f'/api/reports/{rid}/download/zip')
+    assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+        names = bundle.namelist()
+        assert len(names) == 2
+        pdf = bundle.read(next(n for n in names if n.endswith('.pdf')))
+        md = bundle.read(next(n for n in names if n.endswith('.md'))).decode()
+    assert md == saved['markdown']
+    doc = fitz.open(stream=pdf,filetype='pdf')
+    text = ''.join(page.get_text() for page in doc)
+    assert '候选人面试简报' in text and '个人贡献' in text and '需要进一步核对' in text
+    assert c.get(f'/api/reports/{rid}/download/pdf').content == pdf
+    assert c.get(f'/api/reports/{rid}/download/md').text == md
+    extras['note'] = '新版本备注'
+    newer = c.post(f'/api/sessions/{sid}/reports',json=extras).json()
+    assert newer['id'] != rid
+    assert len(c.get(f'/api/candidates/{cid}/reports').json()) == 2
+    assert c.get(f'/api/reports/{rid}').json()['markdown'] == md
+    assert c.get(f'/api/reports/{rid}/download/html').status_code == 400
+    assert c.get('/api/reports/999999').status_code == 404
+    assert c.delete(f'/api/candidates/{cid}').status_code == 200
+    assert c.get(f'/api/reports/{rid}').status_code == 404
+
+
+def test_pdf_long_chinese_content():
+    import fitz
+    from backend.report_export import render_pdf
+    content = '# 面试证据报告\n\n' + '\n\n'.join(f'第 {i} 条：' + '这是包含中文的详细回答和证据。'*20 for i in range(30)) + '\n\n最后一条完整记录'
+    doc = fitz.open(stream=render_pdf(content),filetype='pdf')
+    assert len(doc) > 2
+    text = ''.join(p.get_text() for p in doc)
+    assert '最后一条完整记录' in text
+
+
+def test_concise_report_does_not_assess_skipped_answers(prepared):
+    from backend.report_summary import build_report, SKIPPED
+    from backend.interview_api import evidence_report
+    c, cid, body = prepared
+    gen = make_plan(prepared)
+    session = c.post('/api/sessions',json={'generation_id':gen['id'],'budget':2}).json()
+    session['turns'] = [{'id':1,'question':gen['output']['questions'][0],'answer':SKIPPED,
+        'analysis':{'observation':'不应采纳跳过产生的分析','answer_quote':SKIPPED,'updates':[{'claim_index':0,'state':'SUPPORTED','answer_quote':SKIPPED,'reason':'错误支持'}],'follow_up':None}}]
+    result = build_report(session,evidence_report,'面试官意见放在前面')
+    main = result.split('## 附录')[0]
+    assert '暂不能判断是否符合岗位要求' in main
+    assert '尚未评估的岗位能力：Python' in main
+    assert '共 2 道' in main
+    assert SKIPPED not in result and '不应采纳跳过产生的分析' not in result
+    assert gen['output']['questions'][0]['question'] not in result
+    assert '回答提供支持' not in main
+    assert result.index('面试官意见放在前面') < result.index('## 能力与岗位要求对照')
+    assert result.index('附录 · 能力覆盖与生成信息') > result.index('附录 · 面试记录')
+
+
+def test_concise_report_partial_is_not_a_hiring_verdict(prepared):
+    c, cid, body = prepared
+    gen=make_plan(prepared)
+    session=c.post('/api/sessions',json={'generation_id':gen['id'],'budget':2}).json()
+    c.post(f"/api/sessions/{session['id']}/answers",json={'answer':'我编写了接口与事务。','revision':session['revision']})
+    report=c.get(f"/api/sessions/{session['id']}/report").json()['markdown']
+    main=report.split('## 附录')[0]
+    assert '部分支持，需补证' in main and '开发系统' in main
+    assert '我编写了接口与事务。' in main
+    assert '建议录用' not in main

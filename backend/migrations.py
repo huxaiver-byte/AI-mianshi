@@ -21,6 +21,13 @@ SCHEMA = [
       id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id),
       claim_index INTEGER NOT NULL, state TEXT NOT NULL, note TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS reports(
+      id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL, markdown TEXT NOT NULL, pdf BLOB NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, digest))""",
+    "CREATE INDEX IF NOT EXISTS idx_reports_candidate ON reports(candidate_id)",
     "CREATE INDEX IF NOT EXISTS idx_generations_candidate ON generations(candidate_id)",
     "CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id)",
 ]
